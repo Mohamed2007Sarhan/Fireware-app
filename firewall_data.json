@@ -1,0 +1,8 @@
+{
+  "blocked_ips": [],
+  "allowed_ips": [],
+  "whitelisted_ips": [],
+  "open_ports": [],
+  "closed_ports": [],
+  "access_requests": {}
+}
