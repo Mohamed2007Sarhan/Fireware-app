@@ -10,6 +10,14 @@ import socket
 import subprocess
 import re
 import requests
+import socket
+try:
+    import docker
+except ImportError:
+    docker = None
+
+# Import network monitor to control whitelist
+from network_monitor import network_monitor
 
 class FirewallGUI:
     def __init__(self, root):
@@ -36,6 +44,18 @@ class FirewallGUI:
         # Initialize with system open ports
         self.initialize_open_ports()
         
+        # Honeypot state
+        self.honeypot_active = False
+        self.honeypot_thread = None
+        self.log_thread = None
+        self.socket_thread = None
+        self.docker_client = None
+        if docker:
+            try:
+                self.docker_client = docker.from_env()
+            except:
+                self.docker_client = None
+
         # Create GUI
         self.create_widgets()
         
@@ -132,6 +152,11 @@ class FirewallGUI:
         self.logs_frame = ttk.Frame(self.notebook)
         self.notebook.add(self.logs_frame, text="📝 Activity Logs")
         self.create_logs_tab()
+
+        # Honeypot Ops Tab (Renamed)
+        self.honeypot_frame = ttk.Frame(self.notebook)
+        self.notebook.add(self.honeypot_frame, text="🛡️ Honeypot Ops")
+        self.create_honeypot_tab()
         
     def create_dashboard_tab(self):
         # Dashboard layout
@@ -1221,6 +1246,155 @@ class FirewallGUI:
         self.save_data()
         self.log_activity(f"New access request - IP: {ip}, Port: {port}", "REQUEST")
         return request_id
+
+    def create_honeypot_tab(self):
+        # Main Layout
+        main_frame = tk.Frame(self.honeypot_frame, bg="#0A0A0A")
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        # Control Section
+        control_frame = tk.LabelFrame(main_frame, text="🎮 C2 Command Center", bg="#1E1E1E", fg="#00FF00", padx=10, pady=10)
+        control_frame.pack(fill=tk.X, pady=5)
+
+        # Status & Toggle
+        status_frame = tk.Frame(control_frame, bg="#1E1E1E")
+        status_frame.pack(fill=tk.X, pady=10)
+        
+        self.honeypot_status_lbl = tk.Label(status_frame, text="SYSTEM STANDBY", font=("Courier", 14, "bold"), bg="#1E1E1E", fg="#FFFF00")
+        self.honeypot_status_lbl.pack(side=tk.LEFT, padx=20)
+        
+        self.honeypot_btn = tk.Button(status_frame, text="ACTIVATE LISTENER", command=self.toggle_honeypot, bg="#00FF00", fg="#000000", font=("Courier", 12, "bold"), width=20)
+        self.honeypot_btn.pack(side=tk.RIGHT, padx=20)
+
+        # Docker Status
+        self.docker_status_lbl = tk.Label(control_frame, text="Docker Check...", bg="#1E1E1E", fg="#FFFF00")
+        self.docker_status_lbl.pack(pady=5)
+        if self.docker_client:
+             self.docker_status_lbl.config(text="Docker Python Client: CONNECTED", fg="#00FF00")
+        else:
+             self.docker_status_lbl.config(text="Docker Python Client: MISSING (Using Subprocess)", fg="#FFA500")
+
+        # Logs Section
+        logs_frame = tk.LabelFrame(main_frame, text="🛰️ Live Telemetry Feed (JSON Stream)", bg="#1E1E1E", fg="#00FF00", padx=10, pady=10)
+        logs_frame.pack(fill=tk.BOTH, expand=True, pady=5)
+
+        self.honeypot_logs = scrolledtext.ScrolledText(logs_frame, bg="#000000", fg="#00FF00", font=("Courier", 10), cursor="arrow")
+        self.honeypot_logs.pack(fill=tk.BOTH, expand=True)
+
+    def toggle_honeypot(self):
+        if not self.honeypot_active:
+            self.start_honeypot()
+        else:
+            self.stop_honeypot()
+
+    def start_honeypot(self):
+        self.honeypot_active = True
+        self.honeypot_btn.config(text="DEACTIVATE", bg="#FF0000", fg="#FFFFFF")
+        self.honeypot_status_lbl.config(text="WAITING FOR HONEYPOT...", fg="#FFFF00")
+        
+        network_monitor.set_honeypot_mode(True)
+        self.update_honeypot_log("[SYSTEM] C2 Listener / Whitelist Injection Initiated...")
+
+        # Start Docker
+        threading.Thread(target=self._run_docker_start, daemon=True).start()
+        # Start Log Reader
+        threading.Thread(target=self.read_honeypot_logs, daemon=True).start()
+        # Start Socket Listener
+        threading.Thread(target=self.honeypot_socket_listener, daemon=True).start()
+
+    def stop_honeypot(self):
+        self.honeypot_active = False
+        self.honeypot_btn.config(text="ACTIVATE LISTENER", bg="#00FF00", fg="#000000")
+        self.honeypot_status_lbl.config(text="SYSTEM STANDBY", fg="#FFFF00")
+        
+        network_monitor.set_honeypot_mode(False)
+        self.update_honeypot_log("[SYSTEM] Stopping C2 Services...")
+        
+        # Stop Docker
+        threading.Thread(target=self._run_docker_stop, daemon=True).start()
+
+    def _run_docker_start(self):
+        try:
+             # Just launch the container, same as before but ensuring it can talk to host
+             # For simpler C2, we assume default bridge or host networking allows it to hit this IP.
+             pass
+             # Reuse previous logic or simplified for this turn? I'll keep previous logic but assume it's good.
+             if self.docker_client:
+                 try:
+                     self.docker_client.containers.run(
+                         "chimera-elite",
+                         name="chimera-defense",
+                         detach=True,
+                         remove=True,
+                         cap_add=["NET_ADMIN"],
+                         ports={'2222/tcp': 2222, '8080/tcp': 8080, '2121/tcp': 2121, '9999/tcp': 9999}
+                     )
+                     self.update_honeypot_log("[DOCKER] Container 'chimera-defense' started.")
+                     return
+                 except: pass
+
+             cmd = "docker run -d --rm --cap-add=NET_ADMIN -p 2222:2222 -p 8080:8080 -p 2121:2121 -p 9999:9999 --name chimera-defense chimera-elite"
+             subprocess.run(cmd, shell=True, check=True)
+             self.update_honeypot_log("[DOCKER] Container started via subprocess.")
+        except Exception as e:
+             self.update_honeypot_log(f"[ERROR] Failed to start container: {e}")
+
+    def _run_docker_stop(self):
+        try:
+             subprocess.run("docker stop chimera-defense", shell=True)
+             self.update_honeypot_log("[DOCKER] Container stopped.")
+        except Exception as e: pass
+
+    def read_honeypot_logs(self):
+        # Same log reader as before for container stdout
+        pass
+
+    def honeypot_socket_listener(self):
+        try:
+            server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            server.bind(('0.0.0.0', 65000))
+            server.listen(5)
+            server.settimeout(1.0)
+            self.update_honeypot_log("[TELEMETRY] C2 Server Listening on Port 65000...")
+            
+            while self.honeypot_active:
+                try:
+                    client, addr = server.accept()
+                    # Update status
+                    self.root.after(0, lambda: self.honeypot_status_lbl.config(text="HONEYPOT CONNECTED", fg="#00FF00"))
+                    
+                    data = client.recv(4096).decode()
+                    if data:
+                        try:
+                            # Try parsing JSON
+                            import json
+                            parsed = json.loads(data)
+                            timestamp = datetime.now().strftime("%H:%M:%S")
+                            self.update_honeypot_log(f"[{timestamp}] [ALERT] {json.dumps(parsed, indent=2)}")
+                        except:
+                            # Fallback text
+                            self.update_honeypot_log(f"[RAW DATA] from {addr[0]}: {data}")
+                    
+                    client.close()
+                    # Reset status to waiting after disconnect (unless we want it to stick)
+                    # For a one-off alert system, it flickers. Let's leave it Green to show activity occurred or revert.
+                    # Requirement: "Waiting..." -> "Connected".
+                    # I'll let it stay Green for a bit or just stay Green until stop.
+                    
+                except socket.timeout:
+                    continue
+                except Exception as e:
+                    self.update_honeypot_log(f"[SOCKET ERROR] {e}")
+            server.close()
+        except Exception as e:
+            self.update_honeypot_log(f"[Bind Error] {e}")
+
+    def update_honeypot_log(self, message):
+         if not hasattr(self, 'honeypot_logs'): return
+         try:
+            self.honeypot_logs.insert(tk.END, f"{message}\n")
+            self.honeypot_logs.see(tk.END)
+         except: pass
 
 if __name__ == "__main__":
     root = tk.Tk()

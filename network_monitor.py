@@ -6,9 +6,12 @@ from datetime import datetime, timedelta
 from firewall_core import firewall
 import re
 
+import ipaddress
+
 class NetworkMonitor:
     def __init__(self):
         self.monitoring = False
+        self.honeypot_active = False
         self.connections = []
         self.listeners = []
         self.suspicious_patterns = [
@@ -28,6 +31,32 @@ class NetworkMonitor:
         self.monitor_thread.start()
         print("Network monitoring started")
         
+    def set_honeypot_mode(self, active):
+        """Enable or disable Honeypot mode"""
+        self.honeypot_active = active
+        print(f"Honeypot mode set to: {active}")
+
+    def _is_honeypot_traffic(self, remote_ip, remote_port, local_port):
+        """Check if traffic is related to the Honeypot"""
+        if not self.honeypot_active:
+            return False
+            
+        try:
+            # Check for Docker Bridge Networks (172.17.0.0/16 and 172.18.0.0/16)
+            if (ipaddress.ip_address(remote_ip) in ipaddress.ip_network('172.17.0.0/16') or 
+                ipaddress.ip_address(remote_ip) in ipaddress.ip_network('172.18.0.0/16')):
+                return True
+                
+            # Check for Honeypot ports
+            honeypot_ports = [2222, 8080, 2121, 9999]
+            if local_port in honeypot_ports or remote_port in honeypot_ports:
+                return True
+                
+        except ValueError:
+            pass
+            
+        return False
+
     def stop_monitoring(self):
         """Stop monitoring network connections"""
         self.monitoring = False
@@ -94,6 +123,10 @@ class NetworkMonitor:
             
     def _should_block_connection(self, remote_ip, remote_port, local_port):
         """Determine if a connection should be blocked"""
+        # Bypass for Honeypot traffic
+        if self._is_honeypot_traffic(remote_ip, remote_port, local_port):
+            return False
+
         # Check if IP is explicitly blocked
         if firewall.is_ip_blocked(remote_ip):
             firewall.log_connection(remote_ip, "BLOCK", f"Blocked IP trying to access port {local_port}")
@@ -108,6 +141,10 @@ class NetworkMonitor:
         
     def _is_access_request(self, remote_ip, local_port):
         """Determine if this is a connection that requires access approval"""
+        # Bypass for Honeypot traffic
+        if self._is_honeypot_traffic(remote_ip, 0, local_port):
+            return False
+
         # For penetration testing, we'll treat connections to common target ports as requiring approval
         target_ports = [21, 22, 23, 25, 53, 80, 110, 143, 443, 993, 995, 1433, 3306, 3389, 5432, 8080]
         if local_port in target_ports:
@@ -116,6 +153,10 @@ class NetworkMonitor:
         
     def _is_suspicious_activity(self, remote_ip, local_port):
         """Detect suspicious network activity"""
+        # Bypass for Honeypot traffic
+        if self._is_honeypot_traffic(remote_ip, 0, local_port):
+            return False
+
         # Check for rapid connections from same IP (potential scanning)
         # This would require maintaining connection history, simplified here
         return False

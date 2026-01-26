@@ -2,8 +2,6 @@
 
 A comprehensive cybersecurity firewall application specifically designed for penetration testers and cybersecurity professionals. This advanced firewall provides real-time protection against unauthorized access, DDoS attacks, and suspicious network activity.
 
-![Main Interface](img/WhatsApp%20Image%202025-10-26%20at%2017.34.59_10d64d02.jpg)
-
 ## 🚀 Key Features
 
 ### 🔐 Advanced IP Management
@@ -118,6 +116,5 @@ The application features a professional cybersecurity-themed interface with:
 This is a user-space application that simulates firewall functionality. For actual system-level firewall protection, integration with Windows Firewall or other system-level tools would be required.
 
 ## 📄 License
-
 
 This project is for educational and professional cybersecurity purposes only.
